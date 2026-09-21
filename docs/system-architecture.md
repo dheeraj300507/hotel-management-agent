@@ -4,86 +4,112 @@ This document details the system architecture, component interactions, and data 
 
 ---
 
-## 1. High-Level Architecture Overview
-
-The system follows a lightweight, single-tier service architecture designed for simplicity, ease of deployment, and clear separation of concerns.
+## 1. System Architecture Diagram
 
 ```mermaid
 flowchart TD
-    A[User] -->|Natural Language Request| B[Frontend UI]
-    B -->|HTTP POST /agent/chat| C[FastAPI Backend]
-    C -->|Invokes with Context & Tools| D[AI Agent]
-    D -->|Calls specific tool| E[Hotel Management Tools]
-    E -->|SQLAlchemy ORM Queries| F[(SQLite Database)]
-    F -->|Raw Query Results| E
-    E -->|Structured Tool Result| D
-    D -->|Synthesized Friendly Response| C
-    C -->|JSON Response| B
-    B -->|Renders Chat Message| A
-
-    subgraph Direct REST API
-        C -.->|GET /rooms| F
-        C -.->|GET /guests| F
-        C -.->|GET/POST/DELETE /bookings| F
+    subgraph Client ["Client Layer"]
+        UI["Web Browser Interface (HTML5 / CSS3 / JavaScript)"]
     end
+
+    subgraph API ["Web and API Layer (FastAPI)"]
+        Server["FastAPI Application (app/main.py)"]
+        ChatRoute["Chat Endpoint: POST /agent/chat"]
+        RestRoutes["REST Endpoints: /rooms, /guests, /bookings"]
+    end
+
+    subgraph Agent ["AI Agent Layer (app/agent.py)"]
+        AgentCore["Agent Orchestrator (run_agent_chat)"]
+        LLMEngine["OpenAI Function Calling Engine"]
+        FallbackEngine["Zero-Config Rule and Regex Parser"]
+    end
+
+    subgraph Tools ["Domain Logic and Tools (app/tools.py)"]
+        Dispatcher["Tool Dispatcher (execute_tool)"]
+        T1["check_room_availability"]
+        T2["create_booking"]
+        T3["get_bookings"]
+        T4["cancel_booking"]
+        T5["get_guests"]
+        T6["get_rooms"]
+    end
+
+    subgraph Database ["Persistence Layer (SQLite and SQLAlchemy)"]
+        ORM["SQLAlchemy ORM (app/models.py)"]
+        SQLite[("SQLite Database (hotel.db)")]
+    end
+
+    UI -->|"Natural Language Query"| ChatRoute
+    UI -.->|"Direct API Access"| RestRoutes
+    ChatRoute --> Server
+    Server -->|"Delegate Message"| AgentCore
+    AgentCore -->|"API Key Configured"| LLMEngine
+    AgentCore -->|"No API Key / Fallback"| FallbackEngine
+    LLMEngine -->|"Tool Execution"| Dispatcher
+    FallbackEngine -->|"Matched Tool"| Dispatcher
+    Dispatcher --> T1
+    Dispatcher --> T2
+    Dispatcher --> T3
+    Dispatcher --> T4
+    Dispatcher --> T5
+    Dispatcher --> T6
+    T1 --> ORM
+    T2 --> ORM
+    T3 --> ORM
+    T4 --> ORM
+    T5 --> ORM
+    T6 --> ORM
+    RestRoutes --> ORM
+    ORM -->|"Read / Write"| SQLite
 ```
 
 ---
 
-## 2. Component Breakdown
+## 2. Component Explanation
 
-### 1. User
-- Interacts with the system through natural language queries (e.g., *"Show available rooms"*, *"Book room 101 for John"*, *"Show today's bookings"*).
+### 1. Client Layer (`app/static/`)
+- **Technology**: Vanilla HTML5, modern CSS3, and native JavaScript.
+- **Role**: Lightweight chat interface providing a single-page view. Users send natural language queries (e.g., *"Show available rooms"*, *"Book room 101 for John"*) or click suggested prompt chips. Displays real-time responses and visual badges indicating which backend tools were invoked.
 
-### 2. Simple Frontend (`app/static/`)
-- **Technology**: Vanilla HTML5, CSS3, and modern JavaScript (zero build step or heavyweight framework required).
-- **Functionality**:
-  - Chat stream with message history and typing indicator.
-  - Suggestion chips for quick, one-click prompts.
-  - Displays tools invoked by the agent (`⚙️ check_room_availability`, etc.).
-  - Communicates directly with the backend via `POST /agent/chat`.
-
-### 3. FastAPI Backend (`app/main.py`, `app/routes/`)
+### 2. Web & API Layer (`app/main.py`, `app/routes/`)
 - **Technology**: Python 3.12+, FastAPI, Uvicorn, Pydantic v2.
-- **Responsibilities**:
-  - Serves the static web frontend and API documentation (`/docs`).
-  - Handles `/agent/chat` requests and feeds them to the AI agent.
-  - Provides direct REST endpoints:
-    - `GET /rooms` — List rooms and filter by type/status.
-    - `GET /guests` — List and search guests.
-    - `GET /bookings` — List bookings and filter by status/today.
-    - `POST /bookings` — Create a booking programmatically.
-    - `DELETE /bookings/{id}` — Cancel a booking.
+- **Role**:
+  - Hosts the HTTP server, CORS middleware, and static asset mount.
+  - Exposes the conversational agent endpoint: `POST /agent/chat`.
+  - Exposes standard REST endpoints for programmatic operations:
+    - `GET /rooms`: List and filter rooms by type and status.
+    - `GET /guests`: Search and list registered guests.
+    - `GET /bookings`: Query all bookings with optional status filters.
+    - `POST /bookings`: Create a new reservation directly.
+    - `DELETE /bookings/{id}`: Cancel a reservation by ID.
 
-### 4. AI Agent (`app/agent.py`)
-- **Technology**: OpenAI-compatible function calling loop (works with OpenAI, Groq, Ollama, OpenRouter, etc.).
-- **Mechanism**:
-  - Injects system prompt with current date and domain context.
-  - Supplies the LLM with the 6 hotel management tool schemas.
-  - Evaluates tool calls returned by the model, executes them, and submits output back to the LLM to formulate a helpful conversational reply.
-  - **Zero-Config Fallback Engine**: If no API key is supplied, a built-in rule/regex engine handles standard operations immediately so the application is instantly functional.
+### 3. AI Agent Layer (`app/agent.py`)
+- **Technology**: OpenAI-compatible function-calling client with rule-based fallback.
+- **Role**:
+  - Injects runtime context (such as the current system date) and tool definitions into the conversation.
+  - **LLM Function-Calling Engine**: When an `OPENAI_API_KEY` is provided, drives an autonomous iterative tool-calling loop (up to 4 iterations) that translates user intent into concrete tool invocations.
+  - **Zero-Config Fallback Engine**: If no API key is configured or an API error occurs, an intelligent pattern-matching engine handles availability checks, bookings, cancellations, and queries locally.
 
-### 5. Agent Tools (`app/tools.py`)
-Encapsulates all domain business logic in 6 clean functions:
-1. `check_room_availability`: Inspects room availability and verifies overlapping date reservations.
-2. `create_booking`: Creates a guest (if new) and books a room for specified dates.
-3. `get_bookings`: Queries active, past, or today's bookings.
-4. `cancel_booking`: Cancels an existing booking and marks room available.
-5. `get_guests`: Searches or lists guest contact information.
-6. `get_rooms`: Returns rooms with their type, price, and status.
+### 4. Domain Logic & Tools (`app/tools.py`)
+- **Role**: Contains the business logic of hotel operations exposed as structured tools:
+  1. `check_room_availability`: Identifies open rooms, filtering by room type and checking for date overlap against existing reservations.
+  2. `create_booking`: Creates a guest profile if necessary, checks for date conflicts, reserves the room, and sets room occupancy.
+  3. `get_bookings`: Retrieves active, historical, or today-only bookings.
+  4. `cancel_booking`: Cancels a reservation and resets room availability if no other active reservations exist for today.
+  5. `get_guests`: Looks up guest contact profiles.
+  6. `get_rooms`: Returns full room inventory with pricing and operational states.
+  - `execute_tool`: Central dispatcher routing function calls from either the LLM or the fallback engine to the corresponding Python function.
 
-### 6. SQLite Database (`app/database.py`, `app/models.py`)
-- Embedded SQLite database (`hotel.db`) managed via **SQLAlchemy ORM**.
-- Three core relational tables:
-  - `guests` (id, name, email, phone)
-  - `rooms` (id, room_number, room_type, price_per_night, status)
-  - `bookings` (id, guest_id, room_id, check_in, check_out, status)
-- Automatically seeded with 6 sample rooms and guests upon startup.
-- Complete table definitions, constraints, and ER diagram are documented in [database-schema.md](database-schema.md).
+### 5. Persistence Layer (`app/database.py`, `app/models.py`)
+- **Technology**: SQLite (`hotel.db`), SQLAlchemy 2.0 ORM.
+- **Role**:
+  - Manages database connection pooling (`engine`), session lifecycle (`SessionLocal`, `get_db`), and schema migration (`init_db()`).
+  - Maintains 3 relational tables: `guests`, `rooms`, and `bookings` with indexed primary keys, foreign key constraints, and cascade delete behavior.
+  - Details of tables and ER diagrams are provided in [database-schema.md](database-schema.md).
 
 ---
 
-## 3. Data Flow Example: Booking a Room
+## 3. End-to-End Workflow: Booking a Room
 
 ```mermaid
 sequenceDiagram
@@ -98,14 +124,14 @@ sequenceDiagram
     User->>UI: Types "Book room 101 for John"
     UI->>API: POST /agent/chat {"message": "Book room 101 for John"}
     API->>Agent: run_agent_chat("Book room 101 for John", db)
-    Agent->>Agent: Analyzes message & selects 'create_booking'
+    Agent->>Agent: Identifies intent & triggers create_booking
     Agent->>Tools: execute_tool("create_booking", {"room_number": "101", "guest_name": "John"}, db)
-    Tools->>DB: Query room 101 & check date conflicts
-    Tools->>DB: Insert or fetch Guest 'John'
+    Tools->>DB: Check room existence & conflicting bookings
+    Tools->>DB: Fetch or create Guest "John"
     Tools->>DB: Insert Booking & update Room status
-    DB-->>Tools: Booking created (ID #2)
+    DB-->>Tools: Booking persisted (ID #2)
     Tools-->>Agent: {"success": true, "booking_id": 2, "room_number": "101", ...}
     Agent-->>API: "Booking confirmed! Booking ID #2 created for John in Room 101..."
     API-->>UI: 200 OK {"response": "...", "tools_called": ["create_booking"]}
-    UI-->>User: Displays agent confirmation message & tool badge
+    UI-->>User: Displays assistant response with tool execution badge
 ```

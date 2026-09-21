@@ -1,0 +1,27 @@
+erDiagram
+    guests ||--o{ bookings : "places"
+    rooms ||--o{ bookings : "reserved in"
+
+    guests {
+        INTEGER id PK
+        VARCHAR name
+        VARCHAR email
+        VARCHAR phone
+    }
+
+    rooms {
+        INTEGER id PK
+        VARCHAR room_number UK
+        VARCHAR room_type
+        FLOAT price_per_night
+        VARCHAR status
+    }
+
+    bookings {
+        INTEGER id PK
+        INTEGER guest_id FK
+        INTEGER room_id FK
+        VARCHAR check_in
+        VARCHAR check_out
+        VARCHAR status
+    }

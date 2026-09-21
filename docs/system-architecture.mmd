@@ -1,0 +1,54 @@
+flowchart TD
+    subgraph Client ["Client Layer"]
+        UI["Web Browser Interface (HTML5 / CSS3 / JavaScript)"]
+    end
+
+    subgraph API ["Web and API Layer (FastAPI)"]
+        Server["FastAPI Application (app/main.py)"]
+        ChatRoute["Chat Endpoint: POST /agent/chat"]
+        RestRoutes["REST Endpoints: /rooms, /guests, /bookings"]
+    end
+
+    subgraph Agent ["AI Agent Layer (app/agent.py)"]
+        AgentCore["Agent Orchestrator (run_agent_chat)"]
+        LLMEngine["OpenAI Function Calling Engine"]
+        FallbackEngine["Zero-Config Rule and Regex Parser"]
+    end
+
+    subgraph Tools ["Domain Logic and Tools (app/tools.py)"]
+        Dispatcher["Tool Dispatcher (execute_tool)"]
+        T1["check_room_availability"]
+        T2["create_booking"]
+        T3["get_bookings"]
+        T4["cancel_booking"]
+        T5["get_guests"]
+        T6["get_rooms"]
+    end
+
+    subgraph Database ["Persistence Layer (SQLite and SQLAlchemy)"]
+        ORM["SQLAlchemy ORM (app/models.py)"]
+        SQLite[("SQLite Database (hotel.db)")]
+    end
+
+    UI -->|"Natural Language Query"| ChatRoute
+    UI -.->|"Direct API Access"| RestRoutes
+    ChatRoute --> Server
+    Server -->|"Delegate Message"| AgentCore
+    AgentCore -->|"API Key Configured"| LLMEngine
+    AgentCore -->|"No API Key / Fallback"| FallbackEngine
+    LLMEngine -->|"Tool Execution"| Dispatcher
+    FallbackEngine -->|"Matched Tool"| Dispatcher
+    Dispatcher --> T1
+    Dispatcher --> T2
+    Dispatcher --> T3
+    Dispatcher --> T4
+    Dispatcher --> T5
+    Dispatcher --> T6
+    T1 --> ORM
+    T2 --> ORM
+    T3 --> ORM
+    T4 --> ORM
+    T5 --> ORM
+    T6 --> ORM
+    RestRoutes --> ORM
+    ORM -->|"Read / Write"| SQLite
